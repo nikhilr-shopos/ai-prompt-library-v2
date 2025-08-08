@@ -3,11 +3,11 @@ import { toggleFavorite } from '@/lib/database'
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { isFavorited } = await request.json()
-    const cardId = params.id
+    const { id: cardId } = await params
 
     // FIXED: Pass isServer=true to use server-side Supabase client
     const updatedCard = await toggleFavorite(cardId, isFavorited)
