@@ -1,119 +1,180 @@
-import { supabase, PromptCard, NewPromptCard } from './supabase'
+import { PromptCard, NewPromptCard } from './supabase';
+import { createServerClient } from './supabase-server';
 
-// Get all prompt cards with optional filtering
+/** ---------- Helper ---------- */
+function getSupabase() {
+  return createServerClient();
+}
+
+/** ---------- Types ---------- */
+export interface PaginatedResult {
+  cards: PromptCard[];
+  totalCount: number;
+  totalPages: number;
+  currentPage: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
+/** ---------- READ (SELECT) ---------- */
 export async function getPromptCards(filters?: {
-  client?: string
-  model?: string
-  favorites?: boolean
-  sortBy?: 'newest' | 'oldest'
-}) {
+  client?: string;
+  model?: string;
+  favorites?: boolean;
+  sortBy?: 'newest' | 'oldest';
+  page?: number;
+  pageSize?: number;
+}): Promise<PaginatedResult> {
+  const supabase = getSupabase();
+
+  const page = filters?.page ?? 1;
+  const pageSize = filters?.pageSize ?? 50;
+  const offset = (page - 1) * pageSize;
+
   let query = supabase
     .from('prompt_cards')
-    .select('*')
+    .select('*', { count: 'exact' });
 
-  // Apply filters
+  // ----- filters -------------------------------------------------
   if (filters?.client && filters.client !== 'all') {
-    query = query.eq('client', filters.client)
+    query = query.eq('client', filters.client);
   }
-  
   if (filters?.model && filters.model !== 'all') {
-    query = query.eq('model', filters.model)
+    query = query.eq('model', filters.model);
   }
-  
   if (filters?.favorites) {
-    query = query.eq('is_favorited', true)
+    query = query.eq('is_favorited', true);
   }
 
-  // Apply sorting
-  const sortDirection = filters?.sortBy === 'oldest' ? 'asc' : 'desc'
-  query = query.order('created_at', { ascending: sortDirection === 'asc' })
+  // ----- sorting -------------------------------------------------
+  const asc = filters?.sortBy === 'oldest';
+  query = query.order('created_at', { ascending: asc });
 
-  const { data, error } = await query
+  // ----- pagination ----------------------------------------------
+  query = query.range(offset, offset + pageSize - 1);
+
+  const { data, error, count } = await query;
 
   if (error) {
-    console.error('Error fetching prompt cards:', error)
-    throw new Error('Failed to fetch prompt cards')
+    console.error('🔴 getPromptCards error:', error);
+    throw new Error('Failed to fetch prompt cards');
   }
 
-  return data as PromptCard[]
+  const totalCount = count ?? 0;
+  const totalPages = Math.ceil(totalCount / pageSize);
+
+  return {
+    cards: data as PromptCard[],
+    totalCount,
+    totalPages,
+    currentPage: page,
+    hasNextPage: page < totalPages,
+    hasPrevPage: page > 1,
+  };
 }
 
-// Get unique clients and models for filter dropdowns
-export async function getFilterOptions() {
+export async function getPromptCardsByIds(cardIds: string[]): Promise<PromptCard[]> {
+  const supabase = getSupabase();
+
   const { data, error } = await supabase
     .from('prompt_cards')
-    .select('client, model')
+    .select('*')
+    .in('id', cardIds);
 
   if (error) {
-    console.error('Error fetching filter options:', error)
-    return { clients: [], models: [] }
+    console.error('🔴 getPromptCardsByIds error:', error);
+    throw new Error('Failed to fetch prompt cards by IDs');
   }
 
-  const clients = [...new Set(data.map(item => item.client))].sort()
-  const models = [...new Set(data.map(item => item.model))].sort()
-
-  return { clients, models }
+  return data as PromptCard[];
 }
 
-// Create new prompt card
-export async function createPromptCard(card: NewPromptCard) {
+/** ---------- CREATE (INSERT) ---------- */
+export async function createPromptCard(card: NewPromptCard): Promise<PromptCard> {
+  const supabase = getSupabase();
+
   const { data, error } = await supabase
     .from('prompt_cards')
-    .insert([card])
+    .insert(card)
     .select()
-    .single()
+    .single();
 
   if (error) {
-    console.error('Error creating prompt card:', error)
-    throw new Error('Failed to create prompt card')
+    console.error('🔴 createPromptCard error:', error);
+    throw new Error('Failed to create prompt card');
   }
 
-  return data as PromptCard
+  return data as PromptCard;
 }
 
-// Update prompt card
-export async function updatePromptCard(id: string, updates: Partial<NewPromptCard>) {
+/** ---------- UPDATE ---------- */
+export async function updatePromptCard(id: string, updates: Partial<PromptCard>): Promise<PromptCard> {
+  const supabase = getSupabase();
+
   const { data, error } = await supabase
     .from('prompt_cards')
     .update(updates)
     .eq('id', id)
     .select()
-    .single()
+    .single();
 
   if (error) {
-    console.error('Error updating prompt card:', error)
-    throw new Error('Failed to update prompt card')
+    console.error('🔴 updatePromptCard error:', error);
+    throw new Error('Failed to update prompt card');
   }
 
-  return data as PromptCard
+  return data as PromptCard;
 }
 
-// Delete prompt card
-export async function deletePromptCard(id: string) {
+/** ---------- DELETE ---------- */
+export async function deletePromptCard(id: string): Promise<void> {
+  const supabase = getSupabase();
+
   const { error } = await supabase
     .from('prompt_cards')
     .delete()
-    .eq('id', id)
+    .eq('id', id);
 
   if (error) {
-    console.error('Error deleting prompt card:', error)
-    throw new Error('Failed to delete prompt card')
+    console.error('🔴 deletePromptCard error:', error);
+    throw new Error('Failed to delete prompt card');
   }
 }
 
-// Toggle favorite status
-export async function toggleFavorite(id: string, isFavorited: boolean) {
+/** ---------- TOGGLE FAVORITE ---------- */
+export async function toggleFavorite(id: string, isFavorited: boolean): Promise<PromptCard> {
+  const supabase = getSupabase();
+
   const { data, error } = await supabase
     .from('prompt_cards')
     .update({ is_favorited: isFavorited })
     .eq('id', id)
     .select()
-    .single()
+    .single();
 
   if (error) {
-    console.error('Error toggling favorite:', error)
-    throw new Error('Failed to toggle favorite')
+    console.error('🔴 toggleFavorite error:', error);
+    throw new Error('Failed to toggle favorite');
   }
 
-  return data as PromptCard
-} 
+  return data as PromptCard;
+}
+
+/** ---------- GET FILTER OPTIONS ---------- */
+export async function getFilterOptions() {
+  const supabase = getSupabase();
+
+  const { data, error } = await supabase
+    .from('prompt_cards')
+    .select('client, model');
+
+  if (error) {
+    console.error('🔴 getFilterOptions error:', error);
+    return { clients: [], models: [] };
+  }
+
+  const clients = [...new Set(data.map((i: any) => i.client))].sort();
+  const models = [...new Set(data.map((i: any) => i.model))].sort();
+
+  return { clients, models };
+}

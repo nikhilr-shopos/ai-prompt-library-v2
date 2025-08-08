@@ -1,10 +1,10 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useEffect, useRef } from "react"
 import { X, Upload, Loader2 } from "lucide-react"
 import Image from "next/image"
+import { updatePromptCardComplete, validateFile, getImageUrl } from "@/lib/storage"
 
 interface PromptCard {
   id: string
@@ -19,6 +19,8 @@ interface PromptCard {
   notes?: string
   is_favorited: boolean
   created_at: string
+  outputImageUrl?: string
+  referenceImageUrl?: string
 }
 
 interface ImageState {
@@ -66,6 +68,7 @@ interface EditableImageProps {
   onImageChange: (newState: ImageState) => void
   required?: boolean
   error?: string
+  loading?: boolean
 }
 
 const useEditForm = (initialCard: PromptCard | null) => {
@@ -89,19 +92,38 @@ const useEditForm = (initialCard: PromptCard | null) => {
     notes: "",
   })
 
+  const [imageUrls, setImageUrls] = useState<{
+    output?: string
+    reference?: string
+  }>({})
+
   useEffect(() => {
     if (initialCard) {
+      // Load signed URLs for existing images
+      const loadImageUrls = async () => {
+        try {
+          const [outputUrl, referenceUrl] = await Promise.all([
+            getImageUrl(initialCard.output_image_path),
+            getImageUrl(initialCard.reference_image_path)
+          ])
+          setImageUrls({
+            output: outputUrl,
+            reference: referenceUrl
+          })
+        } catch (error) {
+          console.error('Failed to load image URLs:', error)
+        }
+      }
+
       setFormState({
         outputImage: {
           type: "existing",
           originalPath: initialCard.output_image_path,
-          originalUrl: initialCard.output_image_path, // In production, use signed URL
           markedForDeletion: false,
         },
         referenceImage: {
           type: "existing",
           originalPath: initialCard.reference_image_path,
-          originalUrl: initialCard.reference_image_path, // In production, use signed URL
           markedForDeletion: false,
         },
         prompt: initialCard.prompt,
@@ -112,27 +134,31 @@ const useEditForm = (initialCard: PromptCard | null) => {
         seed: initialCard.seed,
         notes: initialCard.notes || "",
       })
+
+      loadImageUrls()
     }
   }, [initialCard])
 
-  return { formState, setFormState }
+  return { formState, setFormState, imageUrls }
 }
 
 const FileDropzone = ({
   onFileSelect,
   accept,
   maxSize,
+  loading = false,
 }: {
   onFileSelect: (file: File) => void
   accept: string
   maxSize: number
+  loading?: boolean
 }) => {
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
-    setDragOver(true)
+    if (!loading) setDragOver(true)
   }
 
   const handleDragLeave = (e: React.DragEvent) => {
@@ -143,6 +169,7 @@ const FileDropzone = ({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
+    if (loading) return
 
     const files = Array.from(e.dataTransfer.files)
     if (files.length > 0) {
@@ -151,6 +178,7 @@ const FileDropzone = ({
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (loading) return
     const files = e.target.files
     if (files && files.length > 0) {
       onFileSelect(files[0])
@@ -159,35 +187,34 @@ const FileDropzone = ({
 
   return (
     <div
-      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
-        dragOver ? "border-[#2383E2] bg-blue-50" : "border-[#E8E8E8] bg-[#FAFAFA]"
+      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+        loading ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
+      } ${
+        dragOver && !loading ? "border-[#2383E2] bg-blue-50" : "border-[#E8E8E8] bg-[#FAFAFA]"
       } hover:border-[#2383E2] hover:bg-blue-50`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      onClick={() => fileInputRef.current?.click()}
+      onClick={() => !loading && fileInputRef.current?.click()}
     >
       <Upload className="w-8 h-8 text-[#787774] mx-auto mb-3" />
       <p className="text-[14px] text-[#787774] mb-1">Drag and drop new image here, or browse</p>
-      <p className="text-[12px] text-[#9B9A97]">PNG, JPG, GIF up to 50MB</p>
-      <input ref={fileInputRef} type="file" accept={accept} onChange={handleFileSelect} className="hidden" />
+      <p className="text-[12px] text-[#9B9A97]">PNG, JPG, GIF, WebP up to 50MB</p>
+      <input 
+        ref={fileInputRef} 
+        type="file" 
+        accept={accept} 
+        onChange={handleFileSelect} 
+        className="hidden" 
+        disabled={loading}
+      />
     </div>
   )
 }
 
-const EditableImage = ({ imageState, label, onImageChange, required, error }: EditableImageProps) => {
-  const validateImageFile = (file: File): boolean => {
-    const allowedTypes = ["image/png", "image/jpeg", "image/gif"]
-    if (!allowedTypes.includes(file.type)) {
-      return false
-    }
-    if (file.size > 50 * 1024 * 1024) {
-      return false
-    }
-    return true
-  }
-
+const EditableImage = ({ imageState, label, onImageChange, required, error, loading = false }: EditableImageProps) => {
   const handleMarkForDeletion = () => {
+    if (loading) return
     onImageChange({
       ...imageState,
       type: "staged_delete",
@@ -196,6 +223,7 @@ const EditableImage = ({ imageState, label, onImageChange, required, error }: Ed
   }
 
   const handleConfirmRemoval = () => {
+    if (loading) return
     onImageChange({
       ...imageState,
       type: "staged_delete",
@@ -206,7 +234,14 @@ const EditableImage = ({ imageState, label, onImageChange, required, error }: Ed
   }
 
   const handleFileSelect = (file: File) => {
-    if (!validateImageFile(file)) return
+    if (loading) return
+    
+    try {
+      validateFile(file, 50)
+    } catch (validationError) {
+      console.error('File validation failed:', validationError)
+      return
+    }
 
     const reader = new FileReader()
     reader.onload = (e) => {
@@ -222,6 +257,7 @@ const EditableImage = ({ imageState, label, onImageChange, required, error }: Ed
   }
 
   const handleClearNew = () => {
+    if (loading) return
     onImageChange({
       ...imageState,
       type: imageState.markedForDeletion ? "staged_delete" : "existing",
@@ -241,7 +277,8 @@ const EditableImage = ({ imageState, label, onImageChange, required, error }: Ed
           <button
             type="button"
             onClick={handleMarkForDeletion}
-            className="absolute top-2 right-2 w-6 h-6 bg-[#DC2626] text-white rounded-full flex items-center justify-center hover:bg-[#B91C1C] transition-colors z-10 text-sm"
+            disabled={loading}
+            className="absolute top-2 right-2 w-6 h-6 bg-[#DC2626] text-white rounded-full flex items-center justify-center hover:bg-[#B91C1C] transition-colors z-10 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
             ✕
           </button>
@@ -272,11 +309,12 @@ const EditableImage = ({ imageState, label, onImageChange, required, error }: Ed
           {required && <span className="text-red-500 ml-1">*</span>}
         </label>
         <div className="border-2 border-dashed border-[#FECACA] rounded-lg p-6 bg-[#FEF2F2] text-center">
-          <FileDropzone onFileSelect={handleFileSelect} accept="image/*" maxSize={50 * 1024 * 1024} />
+          <FileDropzone onFileSelect={handleFileSelect} accept="image/*" maxSize={50 * 1024 * 1024} loading={loading} />
           <button
             type="button"
             onClick={handleConfirmRemoval}
-            className="mt-3 px-4 py-2 bg-[#DC2626] text-white rounded-md text-[14px] hover:bg-[#B91C1C] transition-colors"
+            disabled={loading}
+            className="mt-3 px-4 py-2 bg-[#DC2626] text-white rounded-md text-[14px] hover:bg-[#B91C1C] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Remove Original Image
           </button>
@@ -298,7 +336,8 @@ const EditableImage = ({ imageState, label, onImageChange, required, error }: Ed
           <button
             type="button"
             onClick={handleClearNew}
-            className="absolute top-2 right-2 w-6 h-6 bg-[#DC2626] text-white rounded-full flex items-center justify-center hover:bg-[#B91C1C] transition-colors z-10 text-sm"
+            disabled={loading}
+            className="absolute top-2 right-2 w-6 h-6 bg-[#DC2626] text-white rounded-full flex items-center justify-center hover:bg-[#B91C1C] transition-colors z-10 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
             ✕
           </button>
@@ -323,12 +362,35 @@ const EditableImage = ({ imageState, label, onImageChange, required, error }: Ed
 }
 
 export default function EditCardModal({ card, isOpen, onClose, onSuccess }: EditCardModalProps) {
-  const { formState, setFormState } = useEditForm(card)
+  const { formState, setFormState, imageUrls } = useEditForm(card)
   const [errors, setErrors] = useState<ValidationErrors>({})
   const [loading, setLoading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState("")
   const [hasChanges, setHasChanges] = useState(false)
 
   const firstInputRef = useRef<HTMLTextAreaElement>(null)
+
+  // Update image URLs in form state when they load
+  useEffect(() => {
+    if (imageUrls.output && formState.outputImage.type === "existing") {
+      setFormState(prev => ({
+        ...prev,
+        outputImage: {
+          ...prev.outputImage,
+          originalUrl: imageUrls.output
+        }
+      }))
+    }
+    if (imageUrls.reference && formState.referenceImage.type === "existing") {
+      setFormState(prev => ({
+        ...prev,
+        referenceImage: {
+          ...prev.referenceImage,
+          originalUrl: imageUrls.reference
+        }
+      }))
+    }
+  }, [imageUrls, formState.outputImage.type, formState.referenceImage.type])
 
   // Focus management
   useEffect(() => {
@@ -419,27 +481,104 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
     try {
       setLoading(true)
       setErrors({})
+      setUploadProgress("Preparing update...")
 
-      // Simulate API call - replace with actual Supabase integration
-      await new Promise((resolve) => setTimeout(resolve, 2000))
+      // Prepare update data
+      const updateData = {
+        outputImage: formState.outputImage.type === "new" ? formState.outputImage.newFile : undefined,
+        referenceImage: formState.referenceImage.type === "new" ? formState.referenceImage.newFile : undefined,
+        prompt: formState.prompt.trim(),
+        metadata: formState.metadata.trim(),
+        client: formState.client.trim(),
+        model: formState.model.trim(),
+        llmUsed: formState.llmUsed.trim() || undefined,
+        seed: formState.seed.trim(),
+        notes: formState.notes.trim() || undefined,
+      }
 
-      // Mock success
-      console.log("Form updated:", formState)
+      // Prepare current paths for cleanup
+      const currentPaths = {
+        output_image_path: formState.outputImage.type === "new" ? card.output_image_path : undefined,
+        reference_image_path: formState.referenceImage.type === "new" ? card.reference_image_path : undefined,
+      }
+
+      setUploadProgress("Updating...")
+
+      // Use direct Supabase update
+      await updatePromptCardComplete(card.id, updateData, currentPaths)
+
+      setUploadProgress("Update complete!")
+      
+      // ✅ FIXED: Direct close without confirmation after successful save
       onSuccess()
-      handleClose()
+      onClose() // Direct close, no handleClose() call
+      
     } catch (error) {
-      console.error("Update failed:", error)
-      setErrors({ general: "Failed to update prompt card. Please try again." })
+      console.error("Direct update error:", error)
+      setErrors({ 
+        general: error instanceof Error 
+          ? error.message 
+          : "Failed to update prompt card. Please try again." 
+      })
     } finally {
       setLoading(false)
+      setUploadProgress("")
     }
   }
 
+  // ✅ KEEP: Custom confirmation dialog for closing with unsaved changes
   const handleClose = () => {
     if (hasChanges && !loading) {
-      if (window.confirm("You have unsaved changes. Are you sure you want to discard them?")) {
-        onClose()
+      // ✅ Use custom confirmation dialog instead of window.confirm()
+      const confirmDiscard = () => {
+        return new Promise<boolean>((resolve) => {
+          const modal = document.createElement('div')
+          modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-50'
+          modal.innerHTML = `
+            <div class="bg-white rounded-lg p-6 max-w-md mx-4">
+              <h3 class="text-lg font-semibold mb-4 text-gray-900">Discard Changes</h3>
+              <p class="text-gray-600 mb-6">
+                You have unsaved changes. Are you sure you want to discard them?
+              </p>
+              <div class="flex gap-3 justify-end">
+                <button id="cancel-discard" class="px-4 py-2 text-gray-600 bg-gray-100 rounded hover:bg-gray-200 transition-colors">
+                  Continue Editing
+                </button>
+                <button id="confirm-discard" class="px-4 py-2 text-white bg-red-600 rounded hover:bg-red-700 transition-colors">
+                  Discard Changes
+                </button>
+              </div>
+            </div>
+          `
+          
+          document.body.appendChild(modal)
+          
+          const handleConfirm = () => {
+            document.body.removeChild(modal)
+            resolve(true)
+          }
+          
+          const handleCancel = () => {
+            document.body.removeChild(modal)
+            resolve(false)
+          }
+          
+          modal.querySelector('#confirm-discard')?.addEventListener('click', handleConfirm)
+          modal.querySelector('#cancel-discard')?.addEventListener('click', handleCancel)
+          
+          // Close on outside click
+          modal.addEventListener('click', (e) => {
+            if (e.target === modal) handleCancel()
+          })
+        })
       }
+
+      // Use Promise-based confirmation
+      confirmDiscard().then((confirmed) => {
+        if (confirmed) {
+          onClose()
+        }
+      })
     } else {
       onClose()
     }
@@ -488,6 +627,13 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
             </div>
           )}
 
+          {/* Upload Progress */}
+          {uploadProgress && (
+            <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="text-sm text-blue-600">{uploadProgress}</p>
+            </div>
+          )}
+
           {/* Image Upload Section */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <EditableImage
@@ -496,6 +642,7 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
               onImageChange={(newState) => handleImageChange("outputImage", newState)}
               required
               error={errors.outputImage}
+              loading={loading}
             />
 
             <EditableImage
@@ -504,10 +651,11 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
               onImageChange={(newState) => handleImageChange("referenceImage", newState)}
               required
               error={errors.referenceImage}
+              loading={loading}
             />
           </div>
 
-          {/* Prompt */}
+          {/* Text Fields */}
           <div>
             <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">
               Prompt
@@ -519,9 +667,10 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
                 value={formState.prompt}
                 onChange={(e) => handleInputChange("prompt", e.target.value)}
                 placeholder="Enter the prompt used to generate this image..."
+                disabled={loading}
                 className={`w-full min-h-[120px] p-4 border rounded-lg resize-y text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                   errors.prompt ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-                } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+                } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
               />
               <div className="absolute bottom-2 right-2 text-[12px] text-[#9B9A97]">
                 {formState.prompt.length} characters
@@ -530,7 +679,6 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
             {errors.prompt && <p className="mt-2 text-sm text-red-600">{errors.prompt}</p>}
           </div>
 
-          {/* Metadata */}
           <div>
             <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">
               Metadata
@@ -540,14 +688,14 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
               value={formState.metadata}
               onChange={(e) => handleInputChange("metadata", e.target.value)}
               placeholder="Style, resolution, aspect ratio, quality, etc..."
+              disabled={loading}
               className={`w-full min-h-[80px] p-4 border rounded-lg resize-y text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                 errors.metadata ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-              } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+              } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
             />
             {errors.metadata && <p className="mt-2 text-sm text-red-600">{errors.metadata}</p>}
           </div>
 
-          {/* Client & Model Row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">
@@ -559,9 +707,10 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
                 value={formState.client}
                 onChange={(e) => handleInputChange("client", e.target.value)}
                 placeholder="e.g., Brand A, Agency X"
+                disabled={loading}
                 className={`w-full p-3 border rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                   errors.client ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-                } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+                } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
               />
               {errors.client && <p className="mt-2 text-sm text-red-600">{errors.client}</p>}
             </div>
@@ -576,15 +725,15 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
                 value={formState.model}
                 onChange={(e) => handleInputChange("model", e.target.value)}
                 placeholder="e.g., DALL-E 3, Midjourney v6"
+                disabled={loading}
                 className={`w-full p-3 border rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                   errors.model ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-                } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+                } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
               />
               {errors.model && <p className="mt-2 text-sm text-red-600">{errors.model}</p>}
             </div>
           </div>
 
-          {/* LLM Used & Seed Row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">LLM Used</label>
@@ -593,7 +742,8 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
                 value={formState.llmUsed}
                 onChange={(e) => handleInputChange("llmUsed", e.target.value)}
                 placeholder="e.g., GPT-4, Claude, Gemini"
-                className="w-full p-3 border border-[#E8E8E8] rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] bg-white focus:border-[#2383E2] focus:outline-none focus:ring-3 focus:ring-blue-100 transition-colors"
+                disabled={loading}
+                className="w-full p-3 border border-[#E8E8E8] rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] bg-white focus:border-[#2383E2] focus:outline-none focus:ring-3 focus:ring-blue-100 transition-colors disabled:opacity-50"
               />
             </div>
 
@@ -607,22 +757,23 @@ export default function EditCardModal({ card, isOpen, onClose, onSuccess }: Edit
                 value={formState.seed}
                 onChange={(e) => handleInputChange("seed", e.target.value)}
                 placeholder="e.g., 123456789"
+                disabled={loading}
                 className={`w-full p-3 border rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                   errors.seed ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-                } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+                } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
               />
               {errors.seed && <p className="mt-2 text-sm text-red-600">{errors.seed}</p>}
             </div>
           </div>
 
-          {/* Notes */}
           <div>
             <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">Notes (Optional)</label>
             <textarea
               value={formState.notes}
               onChange={(e) => handleInputChange("notes", e.target.value)}
               placeholder="Additional notes, observations, or comments..."
-              className="w-full min-h-[100px] p-4 border border-[#E8E8E8] rounded-lg resize-y text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] bg-white focus:border-[#2383E2] focus:outline-none focus:ring-3 focus:ring-blue-100 transition-colors"
+              disabled={loading}
+              className="w-full min-h-[100px] p-4 border border-[#E8E8E8] rounded-lg resize-y text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] bg-white focus:border-[#2383E2] focus:outline-none focus:ring-3 focus:ring-blue-100 transition-colors disabled:opacity-50"
             />
           </div>
 

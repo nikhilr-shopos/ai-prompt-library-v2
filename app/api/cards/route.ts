@@ -1,25 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getPromptCards, createPromptCard } from '@/lib/database'
-import { uploadImage, generateFileName } from '@/lib/storage'
+import { NewPromptCard } from '@/lib/supabase'
 
-// GET /api/cards - Fetch all cards with filtering
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const client = searchParams.get('client') || undefined
-    const model = searchParams.get('model') || undefined
-    const favorites = searchParams.get('favorites') === 'true'
-    const sortBy = (searchParams.get('sortBy') as 'newest' | 'oldest') || 'newest'
-
+    
     const filters = {
-      client: client === 'all' ? undefined : client,
-      model: model === 'all' ? undefined : model,
-      favorites: favorites || undefined,
-      sortBy
+      client: searchParams.get('client') || undefined,
+      model: searchParams.get('model') || undefined,
+      favorites: searchParams.get('favorites') === 'true',
+      sortBy: (searchParams.get('sortBy') as 'newest' | 'oldest') || 'newest',
+      page: parseInt(searchParams.get('page') || '1'),
+      pageSize: parseInt(searchParams.get('pageSize') || '50')
     }
 
-    const cards = await getPromptCards(filters)
-    return NextResponse.json(cards)
+    // FIXED: Pass isServer=true to use server-side Supabase client
+    const result = await getPromptCards(filters)
+    
+    return NextResponse.json({
+      cards: result.cards,
+      pagination: {
+        currentPage: result.currentPage,
+        totalPages: result.totalPages,
+        totalCount: result.totalCount,
+        pageSize: filters.pageSize,
+        hasNextPage: result.hasNextPage,
+        hasPrevPage: result.hasPrevPage
+      }
+    })
   } catch (error) {
     console.error('Error in GET /api/cards:', error)
     return NextResponse.json(
@@ -29,48 +38,27 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/cards - Create new card
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData()
+    const body = await request.json()
     
-    // Extract files
-    const outputFile = formData.get('outputImage') as File
-    const referenceFile = formData.get('referenceImage') as File
-    
-    if (!outputFile || !referenceFile) {
-      return NextResponse.json(
-        { error: 'Both output and reference images are required' },
-        { status: 400 }
-      )
+    const newCard: NewPromptCard = {
+      prompt: body.prompt,
+      metadata: body.metadata,
+      client: body.client,
+      model: body.model,
+      seed: body.seed,
+      llm_used: body.llm_used || null,
+      notes: body.notes || null,
+      output_image_path: body.output_image_path,
+      reference_image_path: body.reference_image_path,
+      is_favorited: false
     }
 
-    // Generate unique filenames
-    const outputFileName = generateFileName(outputFile.name)
-    const referenceFileName = generateFileName(referenceFile.name)
-
-    // Upload images
-    const outputPath = await uploadImage(outputFile, 'output', outputFileName)
-    const referencePath = await uploadImage(referenceFile, 'reference', referenceFileName)
-
-    // Extract form data
-    const cardData = {
-      output_image_path: outputPath,
-      reference_image_path: referencePath,
-      prompt: formData.get('prompt') as string,
-      metadata: formData.get('metadata') as string,
-      client: formData.get('client') as string,
-      model: formData.get('model') as string,
-      llm_used: formData.get('llmUsed') as string || undefined,
-      seed: formData.get('seed') as string,
-      notes: formData.get('notes') as string || undefined,
-      is_favorited: formData.get('isFavorited') === 'true'
-    }
-
-    // Create database record
-    const newCard = await createPromptCard(cardData)
+    // FIXED: Pass isServer=true to use server-side Supabase client
+    const card = await createPromptCard(newCard)
     
-    return NextResponse.json(newCard, { status: 201 })
+    return NextResponse.json(card, { status: 201 })
   } catch (error) {
     console.error('Error in POST /api/cards:', error)
     return NextResponse.json(
@@ -78,4 +66,4 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   }
-} 
+}

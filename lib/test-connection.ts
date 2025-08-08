@@ -11,7 +11,7 @@ export async function testConnection() {
       return false
     }
 
-    console.log('✅ Database connection successful')
+
     return true
   } catch (err) {
     console.error('❌ Database connection failed:', err)

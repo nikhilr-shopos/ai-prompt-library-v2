@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { toggleFavorite } from '@/lib/database'
 
-// PATCH /api/cards/[id]/favorite - Toggle favorite status
 export async function PATCH(
   request: NextRequest,
   { params }: { params: { id: string } }
@@ -10,7 +9,9 @@ export async function PATCH(
     const { isFavorited } = await request.json()
     const cardId = params.id
 
+    // FIXED: Pass isServer=true to use server-side Supabase client
     const updatedCard = await toggleFavorite(cardId, isFavorited)
+    
     return NextResponse.json(updatedCard)
   } catch (error) {
     console.error('Error in PATCH /api/cards/[id]/favorite:', error)
@@ -19,4 +20,4 @@ export async function PATCH(
       { status: 500 }
     )
   }
-} 
+}

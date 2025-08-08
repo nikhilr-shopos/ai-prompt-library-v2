@@ -1,9 +1,8 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useRef, useEffect } from "react"
-import { Star, Eye, Download, MoreHorizontal, Edit, Trash2, Check, Square } from "lucide-react"
+import { Star, Eye, Download, MoreHorizontal, Edit, Trash2, Check, Square, Copy } from "lucide-react"
 import Image from "next/image"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -11,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 
+// FIX #1: Add missing imageUrlsLoaded property to interface
 interface PromptCard {
   id: string
   output_image_path: string
@@ -27,6 +27,7 @@ interface PromptCard {
   // Added for frontend use
   outputImageUrl?: string
   referenceImageUrl?: string
+  imageUrlsLoaded?: boolean
 }
 
 interface PromptCardProps {
@@ -40,6 +41,63 @@ interface PromptCardProps {
   onViewOutputImage: (card: PromptCard) => void
   onFavoriteToggle: (cardId: string) => void
   index: number
+  setCardRef?: (element: HTMLDivElement | null, cardId: string) => void
+}
+
+// Copy functionality
+const copyToClipboard = async (text: string): Promise<boolean> => {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch (err) {
+    // Fallback for older browsers
+    try {
+      const textArea = document.createElement('textarea')
+      textArea.value = text
+      textArea.style.position = 'fixed'
+      textArea.style.left = '-999999px'
+      textArea.style.top = '-999999px'
+      document.body.appendChild(textArea)
+      textArea.focus()
+      textArea.select()
+      const result = document.execCommand('copy')
+      textArea.remove()
+      return result
+    } catch (fallbackErr) {
+      console.error('Copy failed:', fallbackErr)
+      return false
+    }
+  }
+}
+
+const formatCardData = (card: PromptCard): string => {
+  const sections = [
+    `📝 PROMPT:\n${card.prompt}`,
+    `🎨 METADATA:\n${card.metadata}`,
+    `👤 CLIENT: ${card.client}`,
+    `🤖 MODEL: ${card.model}`,
+    `🎲 SEED: ${card.seed}`,
+  ]
+
+  // Add optional fields if they exist
+  if (card.llm_used) {
+    sections.push(`🧠 LLM: ${card.llm_used}`)
+  }
+  
+  if (card.notes) {
+    sections.push(`📄 NOTES:\n${card.notes}`)
+  }
+
+  // Add metadata
+  const createdDate = new Date(card.created_at).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  })
+  sections.push(`📅 CREATED: ${createdDate}`)
+  sections.push(`⭐ FAVORITED: ${card.is_favorited ? 'Yes' : 'No'}`)
+
+  return sections.join('\n\n') + '\n\n---\n'
 }
 
 // Color coding system for clients and models
@@ -82,6 +140,7 @@ const CardMenu = ({
   isSelected: boolean
 }) => {
   const [isOpen, setIsOpen] = useState(false)
+  const [copySuccess, setCopySuccess] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
 
@@ -111,6 +170,17 @@ const CardMenu = ({
     setIsOpen(!isOpen)
   }
 
+  const handleCopyCard = async () => {
+    setIsOpen(false)
+    const formattedData = formatCardData(card)
+    const success = await copyToClipboard(formattedData)
+    
+    if (success) {
+      setCopySuccess(true)
+      setTimeout(() => setCopySuccess(false), 2000)
+    }
+  }
+
   const menuItems = [
     {
       icon: isSelected ? Square : Check,
@@ -123,6 +193,12 @@ const CardMenu = ({
           onSelect(card.id)
         }
       },
+      variant: "default" as const,
+    },
+    {
+      icon: Copy,
+      label: "Copy All",
+      onClick: handleCopyCard,
       variant: "default" as const,
     },
     {
@@ -152,9 +228,12 @@ const CardMenu = ({
         variant="ghost"
         size="sm"
         onClick={handleToggleMenu}
-        className="h-9 w-9 p-0 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all duration-200"
+        className={cn(
+          "h-9 w-9 p-0 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all duration-200",
+          copySuccess && "text-green-600 hover:text-green-600"
+        )}
       >
-        <MoreHorizontal className="h-4 w-4" />
+        {copySuccess ? <Check className="h-4 w-4" /> : <MoreHorizontal className="h-4 w-4" />}
       </Button>
 
       {isOpen && (
@@ -186,6 +265,13 @@ const CardMenu = ({
           </div>
         </div>
       )}
+
+      {/* Copy Success Toast */}
+      {copySuccess && (
+        <div className="absolute bottom-full right-0 mb-12 px-3 py-2 bg-green-100 text-green-800 text-xs rounded-md shadow-lg animate-in fade-in-0 zoom-in-95 duration-200">
+          Card copied to clipboard!
+        </div>
+      )}
     </div>
   )
 }
@@ -201,28 +287,32 @@ export const PromptCard = ({
   onViewOutputImage,
   onFavoriteToggle,
   index,
+  setCardRef,
 }: PromptCardProps) => {
   const [imageLoaded, setImageLoaded] = useState(false)
   const [imageError, setImageError] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
+  const [quickCopySuccess, setQuickCopySuccess] = useState(false)
 
   const handleImageLoad = () => {
     setImageLoaded(true)
+    setImageError(false) // Reset error state on successful load
   }
 
   const handleImageError = () => {
     setImageError(true)
-    setImageLoaded(true)
+    setImageLoaded(false) // Don't mark as loaded when error occurs - allows retry
   }
 
   const handleCardClick = (e: React.MouseEvent) => {
-    // Only handle selection if clicking on the selectable card area
+    // Only prevent selection if clicking on buttons or non-selectable areas
     const target = e.target as HTMLElement
-    if (target.closest("button") || target.closest(".image-area") || target.closest(".non-selectable")) {
+    if (target.closest("button") || target.closest(".non-selectable")) {
       return
     }
 
-    // Direct toggle selection - no need to check if already selected
+    // Allow selection on image area and card body - this enables multi-select behavior
+    // Direct toggle selection - clicking any card toggles its selection state
     if (isSelected) {
       onDeselect(card.id)
     } else {
@@ -242,10 +332,19 @@ export const PromptCard = ({
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!card.output_image_path) return
+
+    // Use signed URL if available, otherwise fallback to path
+    const imageUrl = card.outputImageUrl || card.output_image_path
+    if (!imageUrl) {
+      return
+    }
 
     try {
-      const response = await fetch(card.output_image_path)
+      const response = await fetch(imageUrl)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
 
@@ -258,12 +357,27 @@ export const PromptCard = ({
 
       window.URL.revokeObjectURL(url)
     } catch (error) {
-      console.error("Download failed:", error)
+      console.error('Download failed:', error)
     }
   }
 
+  const handleQuickCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const formattedData = formatCardData(card)
+    const success = await copyToClipboard(formattedData)
+    
+    if (success) {
+      setQuickCopySuccess(true)
+      setTimeout(() => setQuickCopySuccess(false), 2000)
+    }
+  }
+
+
+
   return (
     <Card
+      ref={(element) => setCardRef?.(element, card.id)}
+      data-card-id={card.id}
       className={cn(
         "group relative overflow-hidden transition-all duration-200 cursor-pointer select-none",
         "hover:shadow-lg hover:-translate-y-1",
@@ -288,6 +402,24 @@ export const PromptCard = ({
           <Check className="h-4 w-4 text-primary-foreground font-bold" />
         </div>
       )}
+
+      {/* Quick Copy Button */}
+      <div className="absolute top-4 left-4 z-20 non-selectable">
+        {!isSelected && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleQuickCopy}
+            className={cn(
+              "h-8 w-8 p-0 bg-background/90 hover:bg-background shadow-sm transition-all duration-200 opacity-0 group-hover:opacity-100",
+              quickCopySuccess && "bg-green-100 text-green-600 opacity-100"
+            )}
+            title="Copy all card data"
+          >
+            {quickCopySuccess ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+          </Button>
+        )}
+      </div>
 
       {/* Favorite Button */}
       <div className="absolute top-4 right-4 z-20 non-selectable">
@@ -314,13 +446,28 @@ export const PromptCard = ({
         className="relative w-full h-[260px] overflow-hidden bg-muted cursor-pointer image-area"
         onClick={handleImageClick}
       >
+        {/* FIX #6: Enhanced loading skeleton with URL status indicator */}
         {!imageLoaded && !imageError && (
-          <Skeleton className="absolute inset-0 bg-gradient-to-r from-muted via-muted/50 to-muted bg-[length:200%_100%] animate-shimmer" />
+          <div className="absolute inset-0">
+            <Skeleton className="w-full h-full bg-gradient-to-r from-muted via-muted/50 to-muted bg-[length:200%_100%] animate-shimmer" />
+            {/* Show loading indicator based on URL status */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="text-center text-muted-foreground">
+                <div className="text-2xl mb-2">
+                  {card.imageUrlsLoaded ? "🖼️" : "⏳"}
+                </div>
+                <p className="text-xs">
+                  {card.imageUrlsLoaded ? "Loading image..." : "Generating URL..."}
+                </p>
+              </div>
+            </div>
+          </div>
         )}
 
+        {/* FIX #7: Critical fix - Only use signed URL or placeholder, never raw path */}
         {!imageError && (
           <Image
-            src={card.outputImageUrl || card.output_image_path || "/placeholder.svg"}
+            src={card.outputImageUrl || "/placeholder.svg"}
             alt="Output preview"
             fill
             className={cn(
@@ -333,11 +480,15 @@ export const PromptCard = ({
           />
         )}
 
+        {/* FIX #8: Enhanced error state with recovery information */}
         {imageError && (
           <div className="absolute inset-0 flex items-center justify-center bg-muted text-muted-foreground">
             <div className="text-center">
               <div className="text-4xl mb-2">📷</div>
-              <p className="text-body-sm">Failed to load image</p>
+              <p className="text-body-sm mb-1">Failed to load image</p>
+              <p className="text-xs opacity-75">
+                {card.imageUrlsLoaded ? "URL generated but failed" : "Waiting for URL..."}
+              </p>
             </div>
           </div>
         )}
@@ -429,6 +580,13 @@ export const PromptCard = ({
           />
         </div>
       </CardContent>
+
+      {/* Quick Copy Success Toast */}
+      {quickCopySuccess && (
+        <div className="absolute top-16 left-4 px-3 py-2 bg-green-100 text-green-800 text-xs rounded-md shadow-lg animate-in fade-in-0 zoom-in-95 duration-200 z-30">
+          Copied to clipboard!
+        </div>
+      )}
     </Card>
   )
 }

@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react"
 import { ChevronDown, Plus, Filter } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { UserMenu } from "@/components/auth/user-menu"
 
 interface HeaderProps {
   totalCards: number
@@ -19,6 +20,7 @@ interface HeaderProps {
   onSelectAll: () => void
   onClearSelections: () => void
   onExport: (format: "json" | "csv") => void
+  onCopySelected: (cardIds: string[]) => void
   onAddNew: () => void
   clients: string[]
   models: string[]
@@ -98,6 +100,7 @@ export const Header = ({
   onSelectAll,
   onClearSelections,
   onExport,
+  onCopySelected,
   onAddNew,
   clients,
   models,
@@ -138,6 +141,9 @@ export const Header = ({
                 <Plus className="h-4 w-4 mr-2" />
                 Add New
               </Button>
+
+              {/* User Menu */}
+              <UserMenu />
             </div>
           </div>
         </div>

@@ -1,10 +1,9 @@
-"use client"
+'use client'
 
-import type React from "react"
-
-import { useState, useRef, useEffect } from "react"
+import React, { useState, useRef, useEffect } from "react"
 import { X, Upload, Loader2 } from "lucide-react"
 import Image from "next/image"
+import { uploadPromptCardComplete, validateFile } from "@/lib/storage"
 
 interface FormData {
   outputImage: File | null
@@ -56,6 +55,7 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
   const [errors, setErrors] = useState<ValidationErrors>({})
   const [previews, setPreviews] = useState<ImagePreview>({})
   const [loading, setLoading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState("")
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [hasChanges, setHasChanges] = useState(false)
 
@@ -116,16 +116,14 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
     // Clear previous errors
     setErrors((prev) => ({ ...prev, [`${type}Image`]: undefined }))
 
-    // Validate file type
-    const allowedTypes = ["image/png", "image/jpeg", "image/gif"]
-    if (!allowedTypes.includes(file.type)) {
-      setErrors((prev) => ({ ...prev, [`${type}Image`]: "Please upload PNG, JPG, or GIF files only" }))
-      return
-    }
-
-    // Validate file size (50MB)
-    if (file.size > 50 * 1024 * 1024) {
-      setErrors((prev) => ({ ...prev, [`${type}Image`]: "File size must be less than 50MB" }))
+    try {
+      // Validate file using our storage utility
+      validateFile(file, 50) // 50MB max
+    } catch (error) {
+      setErrors((prev) => ({ 
+        ...prev, 
+        [`${type}Image`]: error instanceof Error ? error.message : "Invalid file" 
+      }))
       return
     }
 
@@ -193,13 +191,20 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
     }
   }
 
-  const handleInputChange = (field: keyof FormData, value: string) => {
-    setFormData((prev) => ({ ...prev, [field]: value }))
+  // ✅ FIXED: Prevent infinite loops by using useCallback and proper typing
+  const handleInputChange = React.useCallback((field: keyof FormData, value: string) => {
+    setFormData((prev) => {
+      // Only update if the value actually changed
+      if (prev[field] === value) return prev
+      return { ...prev, [field]: value }
+    })
+    
     // Clear error when user starts typing
-    if (errors[field as keyof ValidationErrors]) {
-      setErrors((prev) => ({ ...prev, [field]: undefined }))
-    }
-  }
+    setErrors((prev) => {
+      if (!prev[field as keyof ValidationErrors]) return prev
+      return { ...prev, [field]: undefined }
+    })
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -210,57 +215,102 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
       return
     }
 
+    // Double-check required fields
+    if (!formData.outputImage || !formData.referenceImage) {
+      setErrors({ general: "Please upload both output and reference images" })
+      return
+    }
+
     try {
       setLoading(true)
       setErrors({})
+      setUploadProgress("Preparing upload...")
 
-      // Validate required fields
-      if (!formData.prompt || !formData.metadata || !formData.client || 
-          !formData.model || !formData.seed || !formData.outputImage || !formData.referenceImage) {
-        throw new Error('Please fill in all required fields and upload both images')
-      }
-
-      // Create FormData for file upload
-      const submitData = new FormData()
-      submitData.append('outputImage', formData.outputImage)
-      submitData.append('referenceImage', formData.referenceImage)
-      submitData.append('prompt', formData.prompt)
-      submitData.append('metadata', formData.metadata)
-      submitData.append('client', formData.client)
-      submitData.append('model', formData.model)
-      submitData.append('llmUsed', formData.llmUsed || '')
-      submitData.append('seed', formData.seed)
-      submitData.append('notes', formData.notes || '')
-      submitData.append('isFavorited', 'false')
-
-      const response = await fetch('/api/cards', {
-        method: 'POST',
-        body: submitData
+      // Use direct Supabase upload
+      const cardId = await uploadPromptCardComplete({
+        outputImage: formData.outputImage,
+        referenceImage: formData.referenceImage,
+        prompt: formData.prompt.trim(),
+        metadata: formData.metadata.trim(),
+        client: formData.client.trim(),
+        model: formData.model.trim(),
+        llmUsed: formData.llmUsed.trim() || undefined,
+        seed: formData.seed.trim(),
+        notes: formData.notes.trim() || undefined,
+        is_favorited: false
       })
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to create prompt card')
-      }
-
-      // Reset form and close modal
+      setUploadProgress("Upload complete!")
+      
+      // ✅ Direct close without confirmation after successful upload
       resetForm()
       onSuccess()
-      handleClose()
+      onClose()
+      
     } catch (error) {
-      console.error("Submission error:", error)
-      setErrors({ general: error instanceof Error ? error.message : "Failed to save prompt card. Please try again." })
+      console.error("Direct upload error:", error)
+      setErrors({ 
+        general: error instanceof Error 
+          ? error.message 
+          : "Failed to save prompt card. Please try again." 
+      })
     } finally {
       setLoading(false)
+      setUploadProgress("")
     }
   }
 
   const handleClose = () => {
     if (hasChanges && !loading) {
-      if (window.confirm("You have unsaved changes. Are you sure you want to discard them?")) {
-        resetForm()
-        onClose()
+      const confirmDiscard = () => {
+        return new Promise<boolean>((resolve) => {
+          const modal = document.createElement('div')
+          modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-50'
+          modal.innerHTML = `
+            <div class="bg-white rounded-lg p-6 max-w-md mx-4">
+              <h3 class="text-lg font-semibold mb-4 text-gray-900">Discard Entry</h3>
+              <p class="text-gray-600 mb-6">
+                You have unsaved changes. Are you sure you want to discard this entry?
+              </p>
+              <div class="flex gap-3 justify-end">
+                <button id="cancel-discard" class="px-4 py-2 text-gray-600 bg-gray-100 rounded hover:bg-gray-200 transition-colors">
+                  Continue
+                </button>
+                <button id="confirm-discard" class="px-4 py-2 text-white bg-red-600 rounded hover:bg-red-700 transition-colors">
+                  Discard
+                </button>
+              </div>
+            </div>
+          `
+          
+          document.body.appendChild(modal)
+          
+          const handleConfirm = () => {
+            document.body.removeChild(modal)
+            resolve(true)
+          }
+          
+          const handleCancel = () => {
+            document.body.removeChild(modal)
+            resolve(false)
+          }
+          
+          modal.querySelector('#confirm-discard')?.addEventListener('click', handleConfirm)
+          modal.querySelector('#cancel-discard')?.addEventListener('click', handleCancel)
+          
+          // Close on outside click
+          modal.addEventListener('click', (e) => {
+            if (e.target === modal) handleCancel()
+          })
+        })
       }
+
+      confirmDiscard().then((confirmed) => {
+        if (confirmed) {
+          resetForm()
+          onClose()
+        }
+      })
     } else {
       resetForm()
       onClose()
@@ -282,6 +332,7 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
     setErrors({})
     setPreviews({})
     setHasChanges(false)
+    setUploadProgress("")
     if (outputFileRef.current) outputFileRef.current.value = ""
     if (referenceFileRef.current) referenceFileRef.current.value = ""
   }
@@ -329,6 +380,13 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
             </div>
           )}
 
+          {/* Upload Progress */}
+          {uploadProgress && (
+            <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="text-sm text-blue-600">{uploadProgress}</p>
+            </div>
+          )}
+
           {/* Image Upload Section */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Output Image */}
@@ -363,6 +421,7 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                         type="button"
                         onClick={() => removeImage("output")}
                         className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors"
+                        disabled={loading}
                       >
                         <X className="w-3 h-3" />
                       </button>
@@ -374,12 +433,13 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                     <Upload className="w-8 h-8 text-[#787774] mx-auto" />
                     <div>
                       <p className="text-[14px] text-[#787774] mb-1">Drag and drop an image here, or browse</p>
-                      <p className="text-[12px] text-[#9B9A97]">PNG, JPG, GIF up to 50MB</p>
+                      <p className="text-[12px] text-[#9B9A97]">PNG, JPG, GIF, WebP up to 50MB</p>
                     </div>
                     <button
                       type="button"
                       onClick={() => outputFileRef.current?.click()}
-                      className="px-4 py-2 bg-white border border-[#E8E8E8] rounded-lg text-[14px] text-[#1F1F1F] hover:bg-[#F1F1EF] transition-colors"
+                      disabled={loading}
+                      className="px-4 py-2 bg-white border border-[#E8E8E8] rounded-lg text-[14px] text-[#1F1F1F] hover:bg-[#F1F1EF] transition-colors disabled:opacity-50"
                     >
                       Browse Files
                     </button>
@@ -388,9 +448,10 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                 <input
                   ref={outputFileRef}
                   type="file"
-                  accept="image/png,image/jpeg,image/gif"
+                  accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
                   onChange={(e) => handleFileSelect(e, "output")}
                   className="hidden"
+                  disabled={loading}
                 />
               </div>
               {errors.outputImage && <p className="mt-2 text-sm text-red-600">{errors.outputImage}</p>}
@@ -428,6 +489,7 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                         type="button"
                         onClick={() => removeImage("reference")}
                         className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors"
+                        disabled={loading}
                       >
                         <X className="w-3 h-3" />
                       </button>
@@ -439,12 +501,13 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                     <Upload className="w-8 h-8 text-[#787774] mx-auto" />
                     <div>
                       <p className="text-[14px] text-[#787774] mb-1">Drag and drop an image here, or browse</p>
-                      <p className="text-[12px] text-[#9B9A97]">PNG, JPG, GIF up to 50MB</p>
+                      <p className="text-[12px] text-[#9B9A97]">PNG, JPG, GIF, WebP up to 50MB</p>
                     </div>
                     <button
                       type="button"
                       onClick={() => referenceFileRef.current?.click()}
-                      className="px-4 py-2 bg-white border border-[#E8E8E8] rounded-lg text-[14px] text-[#1F1F1F] hover:bg-[#F1F1EF] transition-colors"
+                      disabled={loading}
+                      className="px-4 py-2 bg-white border border-[#E8E8E8] rounded-lg text-[14px] text-[#1F1F1F] hover:bg-[#F1F1EF] transition-colors disabled:opacity-50"
                     >
                       Browse Files
                     </button>
@@ -453,16 +516,17 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                 <input
                   ref={referenceFileRef}
                   type="file"
-                  accept="image/png,image/jpeg,image/gif"
+                  accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
                   onChange={(e) => handleFileSelect(e, "reference")}
                   className="hidden"
+                  disabled={loading}
                 />
               </div>
               {errors.referenceImage && <p className="mt-2 text-sm text-red-600">{errors.referenceImage}</p>}
             </div>
           </div>
 
-          {/* Prompt */}
+          {/* Text Fields */}
           <div>
             <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">
               Prompt
@@ -474,9 +538,10 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                 value={formData.prompt}
                 onChange={(e) => handleInputChange("prompt", e.target.value)}
                 placeholder="Enter the prompt used to generate this image..."
+                disabled={loading}
                 className={`w-full min-h-[120px] p-4 border rounded-lg resize-y text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                   errors.prompt ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-                } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+                } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
               />
               <div className="absolute bottom-2 right-2 text-[12px] text-[#9B9A97]">
                 {formData.prompt.length} characters
@@ -485,7 +550,6 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
             {errors.prompt && <p className="mt-2 text-sm text-red-600">{errors.prompt}</p>}
           </div>
 
-          {/* Metadata */}
           <div>
             <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">
               Metadata
@@ -495,14 +559,14 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
               value={formData.metadata}
               onChange={(e) => handleInputChange("metadata", e.target.value)}
               placeholder="Style, resolution, aspect ratio, quality, etc..."
+              disabled={loading}
               className={`w-full min-h-[80px] p-4 border rounded-lg resize-y text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                 errors.metadata ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-              } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+              } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
             />
             {errors.metadata && <p className="mt-2 text-sm text-red-600">{errors.metadata}</p>}
           </div>
 
-          {/* Client & Model Row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">
@@ -514,9 +578,10 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                 value={formData.client}
                 onChange={(e) => handleInputChange("client", e.target.value)}
                 placeholder="e.g., Brand A, Agency X"
+                disabled={loading}
                 className={`w-full p-3 border rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                   errors.client ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-                } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+                } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
               />
               {errors.client && <p className="mt-2 text-sm text-red-600">{errors.client}</p>}
             </div>
@@ -531,15 +596,15 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                 value={formData.model}
                 onChange={(e) => handleInputChange("model", e.target.value)}
                 placeholder="e.g., DALL-E 3, Midjourney v6"
+                disabled={loading}
                 className={`w-full p-3 border rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                   errors.model ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-                } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+                } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
               />
               {errors.model && <p className="mt-2 text-sm text-red-600">{errors.model}</p>}
             </div>
           </div>
 
-          {/* LLM Used & Seed Row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">LLM Used</label>
@@ -548,7 +613,8 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                 value={formData.llmUsed}
                 onChange={(e) => handleInputChange("llmUsed", e.target.value)}
                 placeholder="e.g., GPT-4, Claude, Gemini"
-                className="w-full p-3 border border-[#E8E8E8] rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] bg-white focus:border-[#2383E2] focus:outline-none focus:ring-3 focus:ring-blue-100 transition-colors"
+                disabled={loading}
+                className="w-full p-3 border border-[#E8E8E8] rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] bg-white focus:border-[#2383E2] focus:outline-none focus:ring-3 focus:ring-blue-100 transition-colors disabled:opacity-50"
               />
             </div>
 
@@ -562,22 +628,23 @@ export default function AddPromptModal({ isOpen, onClose, onSuccess }: AddPrompt
                 value={formData.seed}
                 onChange={(e) => handleInputChange("seed", e.target.value)}
                 placeholder="e.g., 123456789"
+                disabled={loading}
                 className={`w-full p-3 border rounded-lg text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] transition-colors ${
                   errors.seed ? "border-red-300 bg-red-50" : "border-[#E8E8E8] bg-white focus:border-[#2383E2]"
-                } focus:outline-none focus:ring-3 focus:ring-blue-100`}
+                } focus:outline-none focus:ring-3 focus:ring-blue-100 disabled:opacity-50`}
               />
               {errors.seed && <p className="mt-2 text-sm text-red-600">{errors.seed}</p>}
             </div>
           </div>
 
-          {/* Notes */}
           <div>
             <label className="block text-[14px] font-medium text-[#1F1F1F] mb-2">Notes (Optional)</label>
             <textarea
               value={formData.notes}
               onChange={(e) => handleInputChange("notes", e.target.value)}
               placeholder="Additional notes, observations, or comments..."
-              className="w-full min-h-[100px] p-4 border border-[#E8E8E8] rounded-lg resize-y text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] bg-white focus:border-[#2383E2] focus:outline-none focus:ring-3 focus:ring-blue-100 transition-colors"
+              disabled={loading}
+              className="w-full min-h-[100px] p-4 border border-[#E8E8E8] rounded-lg resize-y text-[14px] text-[#1F1F1F] placeholder-[#9B9A97] bg-white focus:border-[#2383E2] focus:outline-none focus:ring-3 focus:ring-blue-100 transition-colors disabled:opacity-50"
             />
           </div>
 

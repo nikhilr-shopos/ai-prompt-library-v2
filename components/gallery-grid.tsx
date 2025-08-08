@@ -4,6 +4,7 @@ import { PromptCard } from "./prompt-card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Plus, ImageIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { useEffect, useRef, useCallback } from "react"
 
 interface PromptCardData {
   id: string
@@ -21,12 +22,14 @@ interface PromptCardData {
   // Added for frontend use
   outputImageUrl?: string
   referenceImageUrl?: string
+  imageUrlsLoaded?: boolean // New property to track if image URLs are loaded
 }
 
 interface GalleryGridProps {
   cards: PromptCardData[]
   selectedCards: string[]
   loading: boolean
+  deletingCards?: string[]
   onCardSelect: (cardId: string) => void
   onCardDeselect: (cardId: string) => void
   onCardEdit: (card: PromptCardData) => void
@@ -35,6 +38,7 @@ interface GalleryGridProps {
   onViewOutputImage: (card: PromptCardData) => void
   onFavoriteToggle: (cardId: string) => void
   onAddNew: () => void
+  onLoadVisibleImages: (visibleCardIds: string[]) => void
 }
 
 const LoadingSkeleton = ({ index }: { index: number }) => (
@@ -88,6 +92,7 @@ export const GalleryGrid = ({
   cards,
   selectedCards,
   loading,
+  deletingCards = [],
   onCardSelect,
   onCardDeselect,
   onCardEdit,
@@ -96,8 +101,76 @@ export const GalleryGrid = ({
   onViewOutputImage,
   onFavoriteToggle,
   onAddNew,
+  onLoadVisibleImages,
 }: GalleryGridProps) => {
   const hasSelections = selectedCards.length > 0
+  const observerRef = useRef<IntersectionObserver | null>(null)
+  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+
+  // Intersection Observer callback to detect visible cards
+  const handleIntersection = useCallback((entries: IntersectionObserverEntry[]) => {
+    const visibleCardIds: string[] = []
+    
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        // Find the card ID from the element
+        const cardElement = entry.target as HTMLDivElement
+        const cardId = cardElement.dataset.cardId
+        
+        if (cardId) {
+          // Check if this card needs image URLs loaded
+          const card = cards.find(c => c.id === cardId)
+          if (card && !card.imageUrlsLoaded) {
+            visibleCardIds.push(cardId)
+          }
+        }
+      }
+    })
+
+    // Load images for visible cards that need them
+    if (visibleCardIds.length > 0) {
+      onLoadVisibleImages(visibleCardIds)
+    }
+  }, [cards, onLoadVisibleImages])
+
+  // Set up intersection observer
+  useEffect(() => {
+    if (!loading) {
+      // Create intersection observer
+      observerRef.current = new IntersectionObserver(handleIntersection, {
+        root: null,
+        rootMargin: '50px', // Start loading 50px before card becomes visible
+        threshold: 0.1 // Trigger when 10% of card is visible
+      })
+
+      return () => {
+        if (observerRef.current) {
+          observerRef.current.disconnect()
+        }
+      }
+    }
+  }, [loading, handleIntersection])
+
+  // Store card element references
+  const setCardRef = useCallback((element: HTMLDivElement | null, cardId: string) => {
+    if (element) {
+      cardRefs.current.set(cardId, element)
+      
+      // Observe the element immediately when it's added
+      if (observerRef.current) {
+        observerRef.current.observe(element)
+      }
+    } else {
+      // Unobserve when element is removed
+      const existingElement = cardRefs.current.get(cardId)
+      if (existingElement && observerRef.current) {
+        observerRef.current.unobserve(existingElement)
+      }
+      cardRefs.current.delete(cardId)
+    }
+  }, [])
+
+
 
   if (loading) {
     return (
@@ -148,6 +221,7 @@ export const GalleryGrid = ({
               onViewOutputImage={onViewOutputImage}
               onFavoriteToggle={onFavoriteToggle}
               index={index}
+              setCardRef={setCardRef}
             />
           </div>
         ))}

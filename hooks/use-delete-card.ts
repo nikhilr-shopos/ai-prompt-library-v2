@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { supabase } from "@/lib/supabase"
 
 interface PromptCard {
   id: string
@@ -29,11 +30,6 @@ export const useDeleteCard = () => {
     setIsDeleting(true)
 
     try {
-      // Simulate API delay for demo purposes
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-
-      // In production, implement actual Supabase deletion:
-      /*
       // Step 1: Delete images from Supabase Storage
       const imagesToDelete = [
         card.output_image_path,
@@ -61,9 +57,8 @@ export const useDeleteCard = () => {
       if (dbError) {
         throw new Error(`Database deletion failed: ${dbError.message}`)
       }
-      */
 
-      console.log("Card deleted successfully:", card.id)
+
       return { success: true }
     } catch (error) {
       console.error("Delete operation failed:", error)

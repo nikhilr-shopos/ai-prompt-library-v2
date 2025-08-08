@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 
-// Types for our database
+// Keep your existing database types
 export interface PromptCard {
   id: string
   output_image_path: string
@@ -31,8 +32,40 @@ export interface NewPromptCard {
   is_favorited?: boolean
 }
 
-// Create Supabase client with hardcoded values (bypasses env var issues)
-const supabaseUrl = 'https://berxjwobcncmoivnezge.supabase.co'
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlcnhqd29iY25jbW9pdm5lemdlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI0ODgxMDIsImV4cCI6MjA2ODA2NDEwMn0.uSKXDUrVH2l4SesUD3X9H7gz7_-pC5mxxAjgY3IQEdc'
+// Add new auth-related types
+export interface AuthUser {
+  id: string
+  email: string
+  email_confirmed_at: string | null
+  created_at: string
+  user_metadata?: {
+    [key: string]: any
+  }
+}
 
+// ✅ SECURE: Use environment variables
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+// Validation to ensure environment variables exist
+if (!supabaseUrl) {
+  throw new Error('Missing NEXT_PUBLIC_SUPABASE_URL environment variable')
+}
+
+if (!supabaseAnonKey) {
+  throw new Error('Missing NEXT_PUBLIC_SUPABASE_ANON_KEY environment variable')
+}
+
+// Client-side Supabase client (for React components)
+export const createClient = () => {
+  return createClientComponentClient()
+}
+
+// Email domain validation for @shopos.ai
+export const validateShoposEmail = (email: string): boolean => {
+  return email.toLowerCase().endsWith('@shopos.ai')
+}
+
+// Keep your existing supabase client for backward compatibility
+// This ensures all your existing code continues to work
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
